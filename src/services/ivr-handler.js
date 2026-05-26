@@ -26,6 +26,7 @@ class IvrHandler {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
     };
+    this.realEstateSessions = new Map();
   }
 
   // ============================================================
@@ -108,6 +109,7 @@ class IvrHandler {
       callerHungUp = true;
       if (dtmfResolve) dtmfResolve(null);
       if (this.dtmfListener) this.dtmfListener.unregister(sipCallId);
+      this.realEstateSessions.delete(sipCallId);
       this._rtpengineDelete(sipCallId, fromTag);
       cdr.status = 'completed';
       cdr.endTime = new Date();
@@ -241,7 +243,7 @@ class IvrHandler {
 
         if (option) {
           logger.info(`IVR: routing digit ${digit} -> ${option.destination.type}:${option.destination.target}`);
-          await this._routeToDestination(uas, option.destination, sipCallId, fromTag, callerID, cdr, originalReq);
+          await this._routeToDestination(uas, option.destination, sipCallId, fromTag, callerID, cdr, originalReq, { ivrConfig, digit, option });
           return;
         } else {
           logger.info(`IVR: invalid digit ${digit} — replaying menu`);
@@ -269,12 +271,16 @@ class IvrHandler {
   // ============================================================
   // Route to a destination after digit press or timeout
   // ============================================================
-  async _routeToDestination(uas, destination, sipCallId, fromTag, callerID, cdr, originalReq) {
+  async _routeToDestination(uas, destination, sipCallId, fromTag, callerID, cdr, originalReq, menuContext = null) {
     const { type, target } = destination;
+    await this._captureRealEstateChoice(sipCallId, callerID, cdr, menuContext, destination);
 
     // Clean up IVR session
     if (this.dtmfListener) this.dtmfListener.unregister(sipCallId);
     await this._rtpengineDelete(sipCallId, fromTag);
+    if (type !== 'ivr') {
+      await this._saveRealEstateLeadIfReady(sipCallId, callerID, cdr, target, true);
+    }
 
     switch (type) {
       case 'extension': {
@@ -287,6 +293,7 @@ class IvrHandler {
             // For now, send to voicemail directly
             logger.info(`IVR ROUTE: sending to voicemail for ${target}`);
           }
+          this.realEstateSessions.delete(sipCallId);
           try { uas.destroy(); } catch (e) {}
           return;
         }
@@ -326,6 +333,7 @@ class IvrHandler {
           // Track as active call
           cdr.to = target;
           await cdr.save();
+          await this._saveRealEstateLeadIfReady(sipCallId, callerID, cdr, target, true);
           this.callHandler.activeCalls.set(sipCallId, { uas, uac, cdr, fromExt: callerID, toExt: target });
 
           // Attach transfer/hold handlers
@@ -337,6 +345,7 @@ class IvrHandler {
           }
         } catch (err) {
           logger.error(`IVR ROUTE: extension ${target} failed: ${err.message}`);
+          this.realEstateSessions.delete(sipCallId);
           try { uas.destroy(); } catch (e) {}
         }
         break;
@@ -348,6 +357,7 @@ class IvrHandler {
         const ringGroup = await RingGroup.findOne({ number: target, enabled: true });
         if (!ringGroup) {
           logger.warn(`IVR ROUTE: ring group ${target} not found`);
+          this.realEstateSessions.delete(sipCallId);
           try { uas.destroy(); } catch (e) {}
           return;
         }
@@ -363,6 +373,7 @@ class IvrHandler {
 
         if (members.length === 0) {
           logger.warn(`IVR ROUTE: no ring group members available`);
+          this.realEstateSessions.delete(sipCallId);
           try { uas.destroy(); } catch (e) {}
           return;
         }
@@ -396,6 +407,7 @@ class IvrHandler {
 
           cdr.to = member.extension;
           await cdr.save();
+          await this._saveRealEstateLeadIfReady(sipCallId, callerID, cdr, member.extension, true);
           this.callHandler.activeCalls.set(sipCallId, { uas, uac, cdr, fromExt: callerID, toExt: member.extension });
 
           if (this.callHandler.transferHandler) {
@@ -408,6 +420,7 @@ class IvrHandler {
           logger.info(`IVR ROUTE: connected to ${member.extension} via ring group ${target}`);
         } catch (err) {
           logger.error(`IVR ROUTE: ring group dial failed: ${err.message}`);
+          this.realEstateSessions.delete(sipCallId);
           try { uas.destroy(); } catch (e) {}
         }
         break;
@@ -426,6 +439,7 @@ class IvrHandler {
           }
         } else {
           logger.warn(`IVR ROUTE: sub-IVR ${target} not found`);
+          this.realEstateSessions.delete(sipCallId);
           try { uas.destroy(); } catch (e) {}
         }
         break;
@@ -433,8 +447,16 @@ class IvrHandler {
 
       case 'voicemail': {
         logger.info(`IVR ROUTE: sending to voicemail for ${target}`);
+        await this._saveRealEstateLeadIfReady(sipCallId, callerID, cdr, target, true);
         try { uas.destroy(); } catch (e) {}
         // The voicemail will be handled by the destroy callback in the CDR
+        break;
+      }
+
+      case 'hangup': {
+        logger.info(`IVR ROUTE: hanging up`);
+        await this._saveRealEstateLeadIfReady(sipCallId, callerID, cdr, '', true);
+        try { uas.destroy(); } catch (e) {}
         break;
       }
 
@@ -473,15 +495,18 @@ class IvrHandler {
               cdr.direction = 'outbound';
               cdr.trunkUsed = route.trunk;
               await cdr.save();
+              await this._saveRealEstateLeadIfReady(sipCallId, callerID, cdr, target, true);
 
               logger.info(`IVR ROUTE: connected to external ${target}`);
             } catch (err) {
               logger.error(`IVR ROUTE: external dial failed: ${err.message}`);
+              this.realEstateSessions.delete(sipCallId);
               try { uas.destroy(); } catch (e) {}
             }
           }
         } else {
           logger.warn(`IVR ROUTE: no outbound route for ${target}`);
+          this.realEstateSessions.delete(sipCallId);
           try { uas.destroy(); } catch (e) {}
         }
         break;
@@ -489,7 +514,65 @@ class IvrHandler {
 
       default:
         logger.warn(`IVR ROUTE: unknown destination type ${type}`);
+        this.realEstateSessions.delete(sipCallId);
         try { uas.destroy(); } catch (e) {}
+    }
+  }
+
+  // ============================================================
+  // Real estate IVR lead capture
+  // ============================================================
+  async _captureRealEstateChoice(sipCallId, callerID, cdr, menuContext, destination) {
+    if (!menuContext || !menuContext.option) return;
+
+    const option = menuContext.option;
+    const leadField = option.leadField || '';
+    if (!leadField) return;
+
+    const value = option.leadValue || option.digit;
+    const session = this.realEstateSessions.get(sipCallId) || {
+      callerNumber: callerID,
+      callId: sipCallId,
+      cdrId: cdr && cdr._id,
+      fields: {},
+      shouldSave: false
+    };
+
+    session.fields[leadField] = value;
+    session.callerNumber = callerID;
+    session.callId = sipCallId;
+    session.cdrId = cdr && cdr._id;
+    session.shouldSave = session.shouldSave || option.saveLead || destination.type !== 'ivr';
+    this.realEstateSessions.set(sipCallId, session);
+
+    logger.info(`IVR LEAD: captured ${leadField}=${value} [${sipCallId}]`);
+  }
+
+  async _saveRealEstateLeadIfReady(sipCallId, callerID, cdr, assignedAgent, force = false) {
+    const session = this.realEstateSessions.get(sipCallId);
+    if (!session || Object.keys(session.fields).length === 0) return null;
+    if (!force && !session.shouldSave) return null;
+
+    try {
+      const { RealEstateLead } = require('../models');
+      const lead = await RealEstateLead.create({
+        state: session.fields.state || '',
+        city: session.fields.city || '',
+        area: session.fields.area || '',
+        bhk: session.fields.bhk || '',
+        callerNumber: callerID || session.callerNumber || '',
+        callId: sipCallId,
+        cdrId: cdr && cdr._id,
+        assignedAgent: assignedAgent || '',
+        status: assignedAgent ? 'assigned' : 'new'
+      });
+
+      this.realEstateSessions.delete(sipCallId);
+      logger.info(`IVR LEAD: saved real estate lead ${lead._id} [${sipCallId}]`);
+      return lead;
+    } catch (err) {
+      logger.error(`IVR LEAD: save failed [${sipCallId}] - ${err.message}`);
+      return null;
     }
   }
 

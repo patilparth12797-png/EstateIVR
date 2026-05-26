@@ -17,7 +17,7 @@ const logger = require('../utils/logger');
 class DtmfListener {
   constructor(port, host) {
     this.port = port || parseInt(process.env.DTMF_LISTEN_PORT) || 22223;
-    this.host = host || '127.0.0.1';
+    this.host = host || process.env.DTMF_LISTEN_HOST || '127.0.0.1';
     this.server = null;
     this.callbacks = new Map(); // call-id -> callback function
     this.tagMap = new Map();    // from-tag -> call-id (for lookup when call-id missing)

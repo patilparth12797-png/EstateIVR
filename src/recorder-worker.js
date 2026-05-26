@@ -14,7 +14,7 @@
  *   systemctl start shadowpbx-recorder
  */
 
-require('dotenv').config({ path: '/opt/shadowpbx/.env' });
+require('dotenv').config();
 
 const { exec } = require('child_process');
 const fs = require('fs');

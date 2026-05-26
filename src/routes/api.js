@@ -1,5 +1,5 @@
 const express = require('express');
-const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
+const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR, RealEstateLead } = require('../models');
 const logger = require('../utils/logger');
 
 function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine) {
@@ -445,6 +445,75 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const ivr = await IVR.findOneAndDelete({ number: req.params.number });
       if (!ivr) return res.status(404).json({ success: false, error: 'IVR not found' });
       res.json({ success: true, message: `IVR ${req.params.number} deleted` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // Real Estate Leads captured from IVR
+  // ============================================================
+  router.get('/real-estate-leads', async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+      const filter = {};
+      ['state', 'city', 'area', 'bhk', 'status', 'assignedAgent', 'callerNumber'].forEach(k => {
+        if (req.query[k]) filter[k] = req.query[k];
+      });
+
+      const [leads, total] = await Promise.all([
+        RealEstateLead.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+        RealEstateLead.countDocuments(filter)
+      ]);
+
+      res.json({ success: true, leads, total, page, limit });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/real-estate-leads/:id', async (req, res) => {
+    try {
+      const lead = await RealEstateLead.findById(req.params.id);
+      if (!lead) return res.status(404).json({ success: false, error: 'Lead not found' });
+      res.json({ success: true, lead });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/real-estate-leads', async (req, res) => {
+    try {
+      const payload = {};
+      ['state', 'city', 'area', 'bhk', 'callerNumber', 'callId', 'assignedAgent', 'status'].forEach(k => {
+        if (req.body[k] !== undefined) payload[k] = req.body[k];
+      });
+      const lead = await RealEstateLead.create(payload);
+      res.status(201).json({ success: true, lead });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/real-estate-leads/:id', async (req, res) => {
+    try {
+      const updates = {};
+      ['state', 'city', 'area', 'bhk', 'callerNumber', 'assignedAgent', 'status'].forEach(k => {
+        if (req.body[k] !== undefined) updates[k] = req.body[k];
+      });
+      if (req.body.note) {
+        updates.$push = {
+          notes: {
+            text: req.body.note,
+            author: req.body.author || ''
+          }
+        };
+      }
+      updates.updatedAt = new Date();
+      const lead = await RealEstateLead.findByIdAndUpdate(req.params.id, updates, { new: true });
+      if (!lead) return res.status(404).json({ success: false, error: 'Lead not found' });
+      res.json({ success: true, lead });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/real-estate-leads/:id', async (req, res) => {
+    try {
+      const lead = await RealEstateLead.findByIdAndDelete(req.params.id);
+      if (!lead) return res.status(404).json({ success: false, error: 'Lead not found' });
+      res.json({ success: true, message: 'Lead deleted' });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 

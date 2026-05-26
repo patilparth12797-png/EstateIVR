@@ -1,0 +1,147 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: shadowpbx-mongo
+    restart: unless-stopped
+
+    ports:
+      - "27017:27017"
+
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: rootpass
+      MONGO_INITDB_DATABASE: shadowpbx
+
+    volumes:
+      - shadowpbx_mongo_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/01-mongo-init.js:ro
+
+  drachtio:
+    image: drachtio/drachtio-server:0.8.25
+    container_name: shadowpbx-drachtio
+    restart: unless-stopped
+
+    ports:
+      - "5060:5060/udp"
+      - "5060:5060/tcp"
+      - "5061:5061/tcp"
+      - "9022:9022/tcp"
+
+    env_file:
+      - .env.docker
+
+    command:
+      - drachtio
+      - --contact
+      - "sip:${EXTERNAL_IP}:5060;transport=udp,tcp"
+      - --contact
+      - "sip:127.0.0.1:5061;transport=ws"
+      - --external-ip
+      - "${EXTERNAL_IP}"
+      - --secret
+      - "${DRACHTIO_SECRET}"
+      - --loglevel
+      - info
+
+  rtpengine:
+    image: jambonz/rtpengine:latest
+    container_name: shadowpbx-rtpengine
+    restart: unless-stopped
+
+    privileged: true
+
+    ports:
+      - "22222:22222/udp"
+      - "10000-10100:10000-10100/udp"
+
+    env_file:
+      - .env.docker
+
+    volumes:
+      - ./audio:/audio:ro
+      - ./runtime/voicemail:/voicemail
+      - ./runtime/spool/rtpengine:/var/spool/rtpengine
+
+    entrypoint:
+      - /usr/local/bin/rtpengine
+
+    command:
+      - "--interface=${EXTERNAL_IP}"
+      - "--listen-ng=0.0.0.0:22222"
+      - "--port-min=10000"
+      - "--port-max=10100"
+      - "--recording-dir=/var/spool/rtpengine"
+      - "--recording-method=pcap"
+      - "--recording-format=eth"
+      - "--dtmf-log-dest=app:22223"
+      - "--log-level=4"
+      - "--log-stderr"
+      - "--foreground"
+      - "--delete-delay=0"
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/shadowpbx.local.Dockerfile
+
+    container_name: shadowpbx-app
+    restart: unless-stopped
+
+    ports:
+      - "3000:3000"
+
+    env_file:
+      - .env.docker
+
+    depends_on:
+      - mongo
+      - drachtio
+      - rtpengine
+
+    working_dir: /app
+
+    command:
+      - node
+      - src/app.js
+
+    volumes:
+      - ./:/app
+      - /app/node_modules
+      - ./audio:/app/audio
+      - ./runtime/logs:/var/log/shadowpbx
+      - ./runtime/recordings:/recordings
+      - ./runtime/voicemail:/voicemail
+      - ./runtime/spool/rtpengine:/var/spool/rtpengine
+
+  recorder:
+    build:
+      context: .
+      dockerfile: docker/shadowpbx.local.Dockerfile
+
+    container_name: shadowpbx-recorder
+    restart: unless-stopped
+
+    env_file:
+      - .env.docker
+
+    depends_on:
+      - mongo
+      - rtpengine
+
+    working_dir: /app
+
+    command:
+      - node
+      - src/recorder-worker.js
+
+    volumes:
+      - ./:/app
+      - /app/node_modules
+      - ./audio:/app/audio
+      - ./runtime/logs:/var/log/shadowpbx
+      - ./runtime/recordings:/recordings
+      - ./runtime/voicemail:/voicemail
+      - ./runtime/spool/rtpengine:/var/spool/rtpengine
+
+volumes:
+  shadowpbx_mongo_data:

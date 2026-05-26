@@ -101,6 +101,9 @@ const ivrSchema = new mongoose.Schema({
   greeting: { type: String, default: '' },  // path to greeting WAV (container path)
   options: [{
     digit: { type: String, required: true },  // '0'-'9', '*', '#'
+    leadField: { type: String, enum: ['', 'state', 'city', 'area', 'bhk'], default: '' },
+    leadValue: { type: String, default: '' },
+    saveLead: { type: Boolean, default: false },
     destination: {
       type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'voicemail', 'external', 'hangup'], required: true },
       target: { type: String, required: true }
@@ -392,6 +395,36 @@ leadSchema.index({ campaignId: 1, phone: 1 }, { unique: true });
 leadSchema.index({ phone: 1 });
 
 // ============================================================
+// Real Estate Lead (captured from inbound IVR)
+// ============================================================
+const realEstateLeadSchema = new mongoose.Schema({
+  state: { type: String, default: '', index: true },
+  city: { type: String, default: '', index: true },
+  area: { type: String, default: '', index: true },
+  bhk: { type: String, default: '', index: true },
+  callerNumber: { type: String, default: '', index: true },
+  callId: { type: String, default: '', index: true },
+  cdrId: { type: mongoose.Schema.Types.ObjectId, ref: 'CDR' },
+  assignedAgent: { type: String, default: '', index: true },
+  status: {
+    type: String,
+    enum: ['new', 'assigned', 'contacted', 'qualified', 'converted', 'closed', 'lost'],
+    default: 'new',
+    index: true
+  },
+  notes: [{
+    text: { type: String, required: true },
+    author: { type: String, default: '' },
+    createdAt: { type: Date, default: Date.now }
+  }],
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+realEstateLeadSchema.index({ createdAt: -1 });
+realEstateLeadSchema.index({ state: 1, city: 1, area: 1, bhk: 1 });
+
+// ============================================================
 // DNC (Do Not Call) — outbound specific
 // ============================================================
 const dncSchema = new mongoose.Schema({
@@ -621,7 +654,8 @@ const AppointmentMessage = mongoose.model('AppointmentMessage', appointmentMessa
 const SIPDomain = mongoose.model('SIPDomain', sipDomainSchema);
 const Campaign = mongoose.model('Campaign', campaignSchema);
 const Lead = mongoose.model('Lead', leadSchema);
+const RealEstateLead = mongoose.model('RealEstateLead', realEstateLeadSchema);
 const DNC = mongoose.model('DNC', dncSchema);
 const CrmConfig = mongoose.model('CrmConfig', crmConfigSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, DNC, CrmConfig };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, RealEstateLead, DNC, CrmConfig };
